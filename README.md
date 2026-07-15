@@ -660,17 +660,6 @@ kubectl delete -f tests/proxy-test-deployment.yaml --ignore-not-found
 
 Use a **GitHub repository as the primary source of truth**, with this README serving as the operational document.
 
-Why a repository is better:
-
-- YAML can be version controlled and peer reviewed.
-- Changes to Squid, Kyverno, or `NO_PROXY` are auditable.
-- Teams can clone and deploy without copying code from a document.
-- Pull requests reduce accidental configuration drift.
-- Releases/tags can identify customer-tested versions.
-- CI can run YAML linting, policy tests, and security scans.
-
-A separate Word/PDF document is useful only as a management-facing overview or formal handover. It should link to a tagged repository release rather than duplicate the manifests.
-
 Recommended repository controls:
 
 - Protected main branch
