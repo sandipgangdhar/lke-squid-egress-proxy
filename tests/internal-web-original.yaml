@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: internal-web
+  namespace: customer-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: internal-web
+  template:
+    metadata:
+      labels:
+        app: internal-web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-web
+  namespace: customer-app
+spec:
+  selector:
+    app: internal-web
+  ports:
+    - port: 80
+      targetPort: 80

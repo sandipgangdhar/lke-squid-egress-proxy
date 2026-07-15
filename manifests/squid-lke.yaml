@@ -1,0 +1,261 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: squid-proxy
+  labels:
+    app.kubernetes.io/name: squid-proxy
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: squid-config
+  namespace: squid-proxy
+data:
+  squid.conf: |
+    # Listen for explicit HTTP/HTTPS proxy requests from cluster workloads.
+    http_port 3128
+
+    # Block Squid cache-manager requests from application clients.
+    http_access deny manager
+
+    # Source networks allowed to use the proxy. Confirm these ranges against
+    # the actual cluster/VPC design before production deployment.
+    acl kubernetes_networks src 10.0.0.0/8
+    acl kubernetes_networks src 172.16.0.0/12
+    acl kubernetes_networks src 192.168.0.0/16
+
+    # Permit HTTP and HTTPS only. HTTPS uses the CONNECT method.
+    acl SSL_ports port 443
+    acl Safe_ports port 80
+    acl Safe_ports port 443
+    acl Safe_ports port 1025-65535
+    acl CONNECT method CONNECT
+
+    # Reject requests to unsafe ports before evaluating source access.
+    http_access deny !Safe_ports
+    http_access deny CONNECT !SSL_ports
+
+    # Allow approved private source ranges, then deny everything else.
+    http_access allow kubernetes_networks
+    http_access deny all
+
+    # This deployment is an egress-control proxy, not a content cache.
+    cache deny all
+    cache_mem 64 MB
+    maximum_object_size 0 KB
+
+    # Do not forward the original application-pod IP in X-Forwarded-For.
+    forwarded_for delete
+
+    # Files are written to the writable emptyDir mounted at /var/log/squid.
+    access_log stdio:/var/log/squid/access.log
+    cache_log /var/log/squid/cache.log
+    cache_store_log none
+
+    # Conservative operational timeouts; tune after load testing.
+    shutdown_lifetime 5 seconds
+    request_timeout 2 minutes
+    connect_timeout 30 seconds
+    read_timeout 5 minutes
+    max_filedescriptors 65535
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: squid
+  namespace: squid-proxy
+# Squid does not need Kubernetes API credentials.
+automountServiceAccountToken: false
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: squid
+  namespace: squid-proxy
+  labels:
+    app.kubernetes.io/name: squid
+spec:
+  # Two replicas provide proxy availability during a single pod/node failure.
+  replicas: 2
+
+  # maxSurge is zero because required anti-affinity plus two eligible nodes
+  # cannot schedule a temporary third Squid pod during a rolling update.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: squid
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: squid
+    spec:
+      serviceAccountName: squid
+
+      # These values must match the dedicated LKE node-pool taint.
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: squid-egress
+          effect: NoSchedule
+
+      affinity:
+        # These values must match the dedicated LKE node-pool label.
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload
+                    operator: In
+                    values:
+                      - squid-egress
+
+        # Force the two Squid replicas onto different worker nodes.
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: squid
+              topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        # Ubuntu Squid uses the proxy group (GID 13). fsGroup makes emptyDir
+        # volumes writable after Squid drops privileges.
+        fsGroup: 13
+        fsGroupChangePolicy: OnRootMismatch
+
+      containers:
+        - name: squid
+          # Replace with an internally approved, vulnerability-scanned image
+          # pinned by immutable digest before production use.
+          image: ubuntu/squid:6.10-24.10_edge
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: proxy
+              containerPort: 3128
+              protocol: TCP
+
+          # Remove any stale PID, validate configuration, then run foreground.
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              rm -f /run/squid.pid
+              squid -k parse -f /etc/squid/squid.conf
+              exec squid -N -d 1 -f /etc/squid/squid.conf
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              # Required by this image so Squid can change to user/group proxy
+              # and initialize ownership of runtime files.
+              add:
+                - SETUID
+                - SETGID
+                - CHOWN
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+
+          # TCP probes verify that Squid accepts connections. They may create
+          # harmless transaction-end-before-headers entries in access.log.
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+
+          livenessProbe:
+            tcpSocket:
+              port: proxy
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - squid -k shutdown || true; sleep 10
+
+          volumeMounts:
+            - name: squid-config
+              mountPath: /etc/squid/squid.conf
+              subPath: squid.conf
+              readOnly: true
+            - name: squid-cache
+              mountPath: /var/spool/squid
+            - name: squid-run
+              mountPath: /run/squid
+            - name: squid-logs
+              mountPath: /var/log/squid
+
+      volumes:
+        - name: squid-config
+          configMap:
+            name: squid-config
+        # Cache is disabled, so persistent storage is not required.
+        - name: squid-cache
+          emptyDir: {}
+        - name: squid-run
+          emptyDir: {}
+        - name: squid-logs
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: squid-proxy
+  namespace: squid-proxy
+  labels:
+    app.kubernetes.io/name: squid
+spec:
+  # Internal-only stable endpoint for application workloads.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: squid
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+      protocol: TCP
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: squid
+  namespace: squid-proxy
+spec:
+  # During API-driven voluntary eviction, keep one proxy replica available.
+  # This does not protect against sudden node, VM, or network failure.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: squid

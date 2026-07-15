@@ -1,0 +1,43 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: inject-squid-proxy
+spec:
+  background: false
+  rules:
+    - name: inject-proxy-environment-variables
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchLabels:
+                  squid-proxy-injection: enabled
+
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - squid-proxy
+                - kube-system
+                - kyverno
+
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): "*"
+                env:
+                  - name: HTTP_PROXY
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: HTTPS_PROXY
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: http_proxy
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: https_proxy
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: NO_PROXY
+                    value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,.cluster.local,kubernetes.default.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+                  - name: no_proxy
+                    value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,.cluster.local,kubernetes.default.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16

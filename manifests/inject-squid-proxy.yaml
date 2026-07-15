@@ -1,0 +1,99 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: inject-squid-proxy
+  annotations:
+    policies.kyverno.io/title: Inject Squid proxy environment variables
+    policies.kyverno.io/description: >-
+      Injects explicit HTTP/HTTPS proxy variables into newly created pods in
+      namespaces labelled squid-proxy-injection=enabled.
+spec:
+  # Existing pods are not modified. Restart workloads after enabling a namespace.
+  background: false
+
+  rules:
+    - name: inject-proxy-variables-into-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchLabels:
+                  squid-proxy-injection: enabled
+
+      # Defense in depth: these namespaces should never be proxy-injected.
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - squid-proxy
+                - kube-system
+                - kyverno
+
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              # Apply the environment list to every regular container.
+              - (name): "*"
+                env:
+                  # Both uppercase and lowercase are provided because proxy
+                  # variable support differs across tools and language runtimes.
+                  - name: HTTP_PROXY
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: HTTPS_PROXY
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: http_proxy
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: https_proxy
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+
+                  # NO_PROXY keeps Kubernetes service-to-service and private
+                  # traffic direct. Add customer internal domains to BOTH values,
+                  # for example: .corp.example.com,.internal.example.net
+                  - name: NO_PROXY
+                    value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,.cluster.local,kubernetes.default.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+                  - name: no_proxy
+                    value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,.cluster.local,kubernetes.default.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
+    - name: inject-proxy-variables-into-init-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchLabels:
+                  squid-proxy-injection: enabled
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - squid-proxy
+                - kube-system
+                - kyverno
+      # Run only when the incoming pod actually defines initContainers.
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.initContainers[] || `[]` | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      mutate:
+        patchStrategicMerge:
+          spec:
+            initContainers:
+              - (name): "*"
+                env:
+                  - name: HTTP_PROXY
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: HTTPS_PROXY
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: http_proxy
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: https_proxy
+                    value: http://squid-proxy.squid-proxy.svc.cluster.local:3128
+                  - name: NO_PROXY
+                    value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,.cluster.local,kubernetes.default.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+                  - name: no_proxy
+                    value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,.cluster.local,kubernetes.default.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16

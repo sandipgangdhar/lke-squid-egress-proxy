@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: customer-app
+  labels:
+    # This opt-in label causes Kyverno to inject the proxy variables.
+    squid-proxy-injection: enabled
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-test
+  namespace: customer-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy-test
+  template:
+    metadata:
+      labels:
+        app: proxy-test
+    spec:
+      containers:
+        - name: curl
+          image: curlimages/curl:8.12.1
+          command: ["/bin/sh", "-c", "sleep 3600"]

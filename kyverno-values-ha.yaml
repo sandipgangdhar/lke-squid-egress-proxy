@@ -1,0 +1,16 @@
+# Kyverno production/high-availability Helm values.
+# Kyverno recommends three admission-controller replicas for HA.
+# The other controllers are also set to three replicas so a single worker/node
+# failure does not remove the controller function entirely.
+
+admissionController:
+  replicas: 3
+
+backgroundController:
+  replicas: 3
+
+cleanupController:
+  replicas: 3
+
+reportsController:
+  replicas: 3
